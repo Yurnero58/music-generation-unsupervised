@@ -72,7 +72,10 @@ def main():
 
     optimiser = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimiser, patience=5, factor=0.5, verbose=True)
+        optimiser,
+        patience=5,
+        factor=0.5
+        )
 
     train_losses, val_losses = [], []
     best_val = float("inf")
@@ -82,7 +85,8 @@ def main():
         tr_loss  = train_one_epoch(model, train_dl, optimiser, device)
         val_loss = evaluate(model, val_dl, device)
         scheduler.step(val_loss)
-
+        current_lr = optimiser.param_groups[0]['lr']
+        print(f"[LR] {current_lr}")
         train_losses.append(tr_loss)
         val_losses.append(val_loss)
 
