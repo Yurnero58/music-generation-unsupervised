@@ -1,132 +1,112 @@
 # =============================================================================
 # src/preprocessing/midi_parser.py
-# Download + parse Groove MIDI dataset into raw note arrays
+# Lakh MIDI Dataset parser (Groove removed completely)
+# Outputs: { "lakh": [piano_rolls] }
 # =============================================================================
 
-import os, zipfile, urllib.request, csv, pickle
+import os
+import pickle
 from pathlib import Path
 import numpy as np
 import pretty_midi
 
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from config import (DATA_RAW, DATA_PROCESSED, GROOVE_URL,
-                    PITCH_RANGE, STEPS_PER_BAR, GENRES)
+from config import DATA_RAW, DATA_PROCESSED, PITCH_RANGE
 
 
 # ---------------------------------------------------------------------------
-# 1. Download
+# 1. Dataset path (NO download — Lakh is manual)
 # ---------------------------------------------------------------------------
-def download_groove(dest: str = DATA_RAW) -> str:
-    """Download Groove MIDI zip if not already present."""
-    zip_path = os.path.join(dest, "groove.zip")
-    extract_path = os.path.join(dest, "groove")
-    if os.path.isdir(extract_path):
-        print(f"[parser] Groove already extracted at {extract_path}")
-        return extract_path
+def download_lakh(dest: str = DATA_RAW) -> str:
+    """
+    Lakh MIDI is too large for auto-download.
+    Put dataset manually in:
+        data/raw_midi/lakh/
+    """
+    path = os.path.join(dest, "lakh")
+    os.makedirs(path, exist_ok=True)
 
-    print(f"[parser] Downloading Groove MIDI (~1 GB) …")
-    urllib.request.urlretrieve(GROOVE_URL, zip_path,
-        reporthook=lambda b, bs, t: print(
-            f"\r  {min(b*bs, t)/1e6:.1f}/{t/1e6:.1f} MB", end="", flush=True))
-    print()
-    print("[parser] Extracting …")
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(dest)
-    os.remove(zip_path)
-    return extract_path
+    print(f"[parser] Using Lakh dataset at: {path}")
+    return path
 
 
 # ---------------------------------------------------------------------------
-# 2. Parse a single MIDI file → piano-roll matrix
+# 2. MIDI → Piano Roll
 # ---------------------------------------------------------------------------
 def midi_to_pianoroll(midi_path: str,
-                      steps_per_bar: int = STEPS_PER_BAR,
                       pitch_lo: int = PITCH_RANGE[0],
                       pitch_hi: int = PITCH_RANGE[1]) -> np.ndarray:
     """
-    Convert one MIDI file to a binary piano-roll.
-    Returns shape (T, n_pitches) where T = number of 16th-note steps.
+    Convert MIDI file → binary piano roll (T, n_pitches)
     """
+
     try:
         pm = pretty_midi.PrettyMIDI(midi_path)
     except Exception as e:
         print(f"[parser] Skip {midi_path}: {e}")
         return None
 
-    # Resolution: 1 step = 1 sixteenth note at the file's tempo
-    # pretty_midi.get_piano_roll uses fs (frames per second)
-    # We compute fs from the median tempo.
-    tempo_times, tempos = pm.get_tempo_changes()
-    bpm = float(np.median(tempos)) if len(tempos) > 0 else 120.0
-    # 1 bar = 4 beats; steps_per_bar steps → steps_per_bar/(4 beats) steps/beat
-    steps_per_beat = steps_per_bar / 4
-    fs = steps_per_beat * (bpm / 60.0)          # steps per second
+    # Fixed resolution (stable for deep learning)
+    roll = pm.get_piano_roll(fs=16)
 
-    roll = pm.get_piano_roll(fs=fs)              # (128, T)
-    roll = (roll > 0).astype(np.float32)         # binarise
-    roll = roll[pitch_lo:pitch_hi, :]            # crop pitch range → (n_p, T)
-    return roll.T                                # (T, n_p)
+    # Binary representation
+    roll = (roll > 0).astype(np.float32)
+
+    # Crop pitch range
+    roll = roll[pitch_lo:pitch_hi, :]
+
+    return roll.T  # (T, n_pitches)
 
 
 # ---------------------------------------------------------------------------
-# 3. Walk the dataset and collect all rolls
+# 3. Load full Lakh dataset
 # ---------------------------------------------------------------------------
-def load_groove_dataset(groove_root: str) -> dict:
+def load_lakh_dataset(lakh_root: str) -> dict:
     """
-    Walk Groove folder structure and return dict:
-        { genre_tag: [pianoroll_array, ...] }
-    Uses the metadata CSV if present, otherwise uses folder name heuristics.
+    Traverse dataset and return:
+        {"lakh": [piano_rolls]}
     """
-    rolls_by_genre: dict = {g: [] for g in GENRES}
-    rolls_by_genre["other"] = []
 
-    # Groove ships a metadata CSV
-    meta_csv = os.path.join(groove_root, "info.csv")
-    file_genre_map: dict = {}
-    if os.path.isfile(meta_csv):
-        with open(meta_csv, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                fname = row.get("midi_filename", "")
-                style = row.get("style", "other").lower().split("/")[0]
-                file_genre_map[fname] = style
+    rolls = []
 
-    midi_files = sorted(Path(groove_root).rglob("*.mid"))
+    midi_files = list(Path(lakh_root).rglob("*.mid"))
     print(f"[parser] Found {len(midi_files)} MIDI files")
 
-    for mid_path in midi_files:
-        rel = str(mid_path.relative_to(groove_root))
-        genre = file_genre_map.get(rel, None)
-        if genre is None:
-            # Fallback: match folder name
-            parts = rel.lower().split(os.sep)
-            genre = next((g for g in GENRES if any(g in p for p in parts)), "other")
+    for path in midi_files:
+        roll = midi_to_pianoroll(str(path))
 
-        roll = midi_to_pianoroll(str(mid_path))
-        if roll is None or roll.shape[0] < 32:
+        if roll is None:
             continue
 
-        bucket = genre if genre in rolls_by_genre else "other"
-        rolls_by_genre[bucket].append(roll)
+        # filter too-short sequences
+        if roll.shape[0] < 32:
+            continue
 
-    for g, lst in rolls_by_genre.items():
-        print(f"  {g:12s}: {len(lst)} files")
-    return rolls_by_genre
+        rolls.append(roll)
+
+    print(f"[parser] Valid sequences: {len(rolls)}")
+
+    return {"lakh": rolls}
 
 
 # ---------------------------------------------------------------------------
-# 4. Save / load
+# 4. Save / Load processed dataset
 # ---------------------------------------------------------------------------
-def save_parsed(rolls_by_genre: dict, dest: str = DATA_PROCESSED):
-    path = os.path.join(dest, "rolls_by_genre.pkl")
+def save_parsed(rolls: dict, dest: str = DATA_PROCESSED):
+    os.makedirs(dest, exist_ok=True)
+
+    path = os.path.join(dest, "lakh_rolls.pkl")
+
     with open(path, "wb") as f:
-        pickle.dump(rolls_by_genre, f)
-    print(f"[parser] Saved parsed data → {path}")
+        pickle.dump(rolls, f)
+
+    print(f"[parser] Saved → {path}")
 
 
 def load_parsed(dest: str = DATA_PROCESSED) -> dict:
-    path = os.path.join(dest, "rolls_by_genre.pkl")
+    path = os.path.join(dest, "lakh_rolls.pkl")
+
     with open(path, "rb") as f:
         return pickle.load(f)
 
@@ -135,7 +115,7 @@ def load_parsed(dest: str = DATA_PROCESSED) -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    groove_root = download_groove()
-    rolls = load_groove_dataset(groove_root)
+    root = download_lakh()
+    rolls = load_lakh_dataset(root)
     save_parsed(rolls)
     print("[parser] Done.")
