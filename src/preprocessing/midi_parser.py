@@ -57,8 +57,8 @@ def midi_to_pianoroll(midi_path: str,
     # Resolution: 1 step = 1 sixteenth note at the file's tempo
     # pretty_midi.get_piano_roll uses fs (frames per second)
     # We compute fs from the median tempo.
-    tempos, _ = pm.get_tempo_change_times()
-    bpm = float(np.median(pm.get_tempo_change_times()[0])) if len(tempos) > 0 else 120.0
+    tempo_times, tempos = pm.get_tempo_changes()
+    bpm = float(np.median(tempos)) if len(tempos) > 0 else 120.0
     # 1 bar = 4 beats; steps_per_bar steps → steps_per_bar/(4 beats) steps/beat
     steps_per_beat = steps_per_bar / 4
     fs = steps_per_beat * (bpm / 60.0)          # steps per second
