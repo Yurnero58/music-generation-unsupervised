@@ -1,121 +1,43 @@
-# =============================================================================
-# src/preprocessing/midi_parser.py
-# Lakh MIDI Dataset parser (Groove removed completely)
-# Outputs: { "lakh": [piano_rolls] }
-# =============================================================================
-
 import os
-import pickle
-from pathlib import Path
+import glob
 import numpy as np
 import pretty_midi
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-from config import DATA_RAW, DATA_PROCESSED, PITCH_RANGE
+def parse_maestro_to_npy(raw_path, output_file, fs=4, window_size=64):
+    all_sequences = []
+    midi_files = glob.glob(os.path.join(raw_path, '**/*.mid*'), recursive=True)
+    
+    print(f"Found {len(midi_files)} files. Starting preprocessing with silence filtering...")
 
+    filtered_out_count = 0
 
-# ---------------------------------------------------------------------------
-# 1. Dataset path (NO download — Lakh is manual)
-# ---------------------------------------------------------------------------
-def download_lakh(dest: str = DATA_RAW) -> str:
-    """
-    Lakh MIDI is too large for auto-download.
-    Put dataset manually in:
-        data/raw_midi/lakh/
-    """
-    path = os.path.join(dest, "lakh")
-    os.makedirs(path, exist_ok=True)
-
-    print(f"[parser] Using Lakh dataset at: {path}")
-    return path
-
-
-# ---------------------------------------------------------------------------
-# 2. MIDI → Piano Roll
-# ---------------------------------------------------------------------------
-def midi_to_pianoroll(midi_path: str,
-                      pitch_lo: int = PITCH_RANGE[0],
-                      pitch_hi: int = PITCH_RANGE[1]) -> np.ndarray:
-    """
-    Convert MIDI file → binary piano roll (T, n_pitches)
-    """
-
-    try:
-        pm = pretty_midi.PrettyMIDI(midi_path)
-    except Exception as e:
-        print(f"[parser] Skip {midi_path}: {e}")
-        return None
-
-    # Fixed resolution (stable for deep learning)
-    roll = pm.get_piano_roll(fs=16)
-
-    # Binary representation
-    roll = (roll > 0).astype(np.float32)
-
-    # Crop pitch range
-    roll = roll[pitch_lo:pitch_hi, :]
-
-    return roll.T  # (T, n_pitches)
-
-
-# ---------------------------------------------------------------------------
-# 3. Load full Lakh dataset
-# ---------------------------------------------------------------------------
-def load_lakh_dataset(lakh_root: str) -> dict:
-    """
-    Traverse dataset and return:
-        {"lakh": [piano_rolls]}
-    """
-
-    rolls = []
-
-    midi_files = list(Path(lakh_root).rglob("*.mid"))
-    print(f"[parser] Found {len(midi_files)} MIDI files")
-
-    for path in midi_files:
-        roll = midi_to_pianoroll(str(path))
-
-        if roll is None:
+    for file_path in midi_files:
+        try:
+            midi_data = pretty_midi.PrettyMIDI(file_path)
+            piano_roll = midi_data.get_piano_roll(fs=fs)
+            
+            # Clip to 88 keys and normalize
+            piano_roll = piano_roll[21:109, :] / 127.0
+            piano_roll = piano_roll.T # Shape: (Time, 88)
+            
+            for i in range(0, piano_roll.shape[0] - window_size, window_size):
+                segment = piano_roll[i : i + window_size, :]
+                
+                if segment.shape[0] == window_size:
+                    # SILENCE FILTER: Keep only segments with at least 15 active note events
+                    if np.sum(segment > 0) >= 15:
+                        all_sequences.append(segment)
+                    else:
+                        filtered_out_count += 1
+                        
+        except Exception as e:
             continue
 
-        # filter too-short sequences
-        if roll.shape[0] < 32:
-            continue
+    data_array = np.array(all_sequences)
+    np.save(output_file, data_array)
+    print(f"Success! Saved {data_array.shape[0]} active music sequences.")
+    print(f"Filtered out {filtered_out_count} silent/empty sequences.")
 
-        rolls.append(roll)
-
-    print(f"[parser] Valid sequences: {len(rolls)}")
-
-    return {"lakh": rolls}
-
-
-# ---------------------------------------------------------------------------
-# 4. Save / Load processed dataset
-# ---------------------------------------------------------------------------
-def save_parsed(rolls: dict, dest: str = DATA_PROCESSED):
-    os.makedirs(dest, exist_ok=True)
-
-    path = os.path.join(dest, "lakh_rolls.pkl")
-
-    with open(path, "wb") as f:
-        pickle.dump(rolls, f)
-
-    print(f"[parser] Saved → {path}")
-
-
-def load_parsed(dest: str = DATA_PROCESSED) -> dict:
-    path = os.path.join(dest, "lakh_rolls.pkl")
-
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    root = download_lakh()
-    rolls = load_lakh_dataset(root)
-    save_parsed(rolls)
-    print("[parser] Done.")
+    os.makedirs('data/processed', exist_ok=True)
+    parse_maestro_to_npy('data/raw_midi/', 'data/processed/classical_piano.npy')

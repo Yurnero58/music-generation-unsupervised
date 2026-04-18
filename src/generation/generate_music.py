@@ -1,134 +1,73 @@
-# =============================================================================
-# src/generation/generate_music.py
-# Generate MIDI samples for all 4 tasks from trained checkpoints
-# =============================================================================
-
-import os, sys, argparse
-from pathlib import Path
-import numpy as np
+import sys
+import os
 import torch
+import numpy as np
+import pretty_midi
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-from config import (DEVICE, OUTPUT_MIDI,
-                    N_SAMPLES_AE, N_SAMPLES_VAE, N_SAMPLES_TR, N_SAMPLES_RL,
-                    N_PITCHES, SEQ_LEN, AE_LATENT_DIM, VAE_LATENT_DIM,
-                    TR_VOCAB_SIZE, TR_D_MODEL, TR_NHEAD, TR_NUM_LAYERS,
-                    TR_DIM_FF, TR_MAX_SEQ_LEN,
-                    AE_HIDDEN_DIM, AE_NUM_LAYERS, AE_DROPOUT,
-                    VAE_HIDDEN_DIM, VAE_NUM_LAYERS, VAE_DROPOUT, VAE_BETA,
-                    TEMPERATURE, TOP_K)
-from models.autoencoder  import LSTMAutoencoder
-from models.vae          import MusicVAE
-from models.transformer  import MusicTransformer
-from generation.midi_export import pianoroll_to_midi, save_midi
-from preprocessing.tokenizer import tokens_to_pianoroll
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from models.autoencoder import LSTMAutoencoder
 
-ROOT     = Path(__file__).resolve().parents[2]
-CKPT_DIR = ROOT / "outputs" / "checkpoints"
-TR_SEQ   = 128
+def tensor_to_instrument(tensor, instrument, start_offset, fs=4):
+    step_duration = 1.0 / fs 
+    
+    # DYNAMIC THRESHOLD: Adapts to the conservative outputs of MSE
+    max_val = np.max(tensor)
+    threshold = max_val * 0.7 if max_val > 0.05 else 0.02 
 
+    for pitch_idx in range(tensor.shape[1]):
+        pitch = pitch_idx + 21 
+        notes = tensor[:, pitch_idx] > threshold 
+        
+        start_time = None
+        for i, val in enumerate(notes):
+            current_time = start_offset + (i * step_duration)
+            if val and start_time is None:
+                start_time = current_time
+            elif not val and start_time is not None:
+                note = pretty_midi.Note(velocity=100, pitch=pitch, start=start_time, end=current_time)
+                instrument.notes.append(note)
+                start_time = None
+        
+        if start_time is not None:
+            end_time = start_offset + (tensor.shape[0] * step_duration)
+            note = pretty_midi.Note(velocity=100, pitch=pitch, start=start_time, end=end_time)
+            instrument.notes.append(note)
 
-# ---------------------------------------------------------------------------
-def load_ae(device):
-    model = LSTMAutoencoder(N_PITCHES, AE_HIDDEN_DIM, AE_LATENT_DIM,
-                            SEQ_LEN, AE_NUM_LAYERS, AE_DROPOUT).to(device)
-    model.load_state_dict(torch.load(CKPT_DIR / "ae_best.pt", map_location=device))
+def generate_samples(num_samples=5, total_seconds=20):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = LSTMAutoencoder().to(device)
+    weights_path = os.path.join(os.path.dirname(__file__), '../models/ae_weights.pt')
+    
+    model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
-    return model
+    
+    fs = 4 
+    steps_per_segment = 64
+    duration_per_segment = steps_per_segment / fs 
+    num_segments = int(np.ceil(total_seconds / duration_per_segment))
 
-
-def load_vae(device):
-    model = MusicVAE(N_PITCHES, VAE_HIDDEN_DIM, VAE_LATENT_DIM, SEQ_LEN,
-                     VAE_NUM_LAYERS, VAE_DROPOUT, VAE_BETA).to(device)
-    model.load_state_dict(torch.load(CKPT_DIR / "vae_best.pt", map_location=device))
-    model.eval()
-    return model
-
-
-def load_transformer(device, rl: bool = False):
-    ckpt = "rl_best.pt" if rl else "transformer_best.pt"
-    model = MusicTransformer(TR_VOCAB_SIZE, TR_D_MODEL, TR_NHEAD,
-                             TR_NUM_LAYERS, TR_DIM_FF, 0.0, TR_SEQ).to(device)
-    model.load_state_dict(torch.load(CKPT_DIR / ckpt, map_location=device))
-    model.eval()
-    return model
-
-
-# ---------------------------------------------------------------------------
-@torch.no_grad()
-def generate_ae_samples(n: int = N_SAMPLES_AE, device=None, tag="task1"):
-    model = load_ae(device)
-    rolls = []
-    for i in range(n):
-        z     = torch.randn(1, AE_LATENT_DIM, device=device)
-        x_hat = model.decode(z).squeeze(0).cpu().numpy()   # (T, n_p)
-        x_bin = (x_hat > 0.5).astype(np.float32)
-        rolls.append(x_bin)
-        pm    = pianoroll_to_midi(x_bin)
-        path  = os.path.join(OUTPUT_MIDI, f"{tag}_sample_{i+1:02d}.mid")
-        save_midi(pm, path)
-        print(f"[gen] {path}")
-    return rolls
-
-
-@torch.no_grad()
-def generate_vae_samples(n: int = N_SAMPLES_VAE, device=None, tag="task2"):
-    model = load_vae(device)
-    rolls = []
-    for i in range(n):
-        x_hat = model.sample(1, device=str(device)).squeeze(0).cpu().numpy()
-        x_bin = (x_hat > 0.5).astype(np.float32)
-        rolls.append(x_bin)
-        pm    = pianoroll_to_midi(x_bin)
-        path  = os.path.join(OUTPUT_MIDI, f"{tag}_sample_{i+1:02d}.mid")
-        save_midi(pm, path)
-        print(f"[gen] {path}")
-    return rolls
-
-
-@torch.no_grad()
-def generate_transformer_samples(n: int = N_SAMPLES_TR, device=None,
-                                  tag="task3", rl=False):
-    model = load_transformer(device, rl=rl)
-    rolls = []
-    for i in range(n):
-        tokens = model.generate(max_new=TR_SEQ, temperature=TEMPERATURE,
-                                top_k=TOP_K, device=str(device))
-        roll   = tokens_to_pianoroll(tokens, SEQ_LEN)
-        rolls.append(roll)
-        pm     = pianoroll_to_midi(roll)
-        path   = os.path.join(OUTPUT_MIDI, f"{tag}_sample_{i+1:02d}.mid")
-        save_midi(pm, path)
-        print(f"[gen] {path}")
-    return rolls
-
-
-# ---------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["1","2","3","4","all"], default="all")
-    args   = parser.parse_args()
-    device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
-    os.makedirs(OUTPUT_MIDI, exist_ok=True)
-
-    if args.task in ("1", "all"):
-        print("\n=== Task 1: LSTM Autoencoder Samples ===")
-        generate_ae_samples(N_SAMPLES_AE, device, "task1_ae")
-
-    if args.task in ("2", "all"):
-        print("\n=== Task 2: VAE Samples ===")
-        generate_vae_samples(N_SAMPLES_VAE, device, "task2_vae")
-
-    if args.task in ("3", "all"):
-        print("\n=== Task 3: Transformer Samples ===")
-        generate_transformer_samples(N_SAMPLES_TR, device, "task3_tr", rl=False)
-
-    if args.task in ("4", "all"):
-        print("\n=== Task 4: RLHF Samples ===")
-        generate_transformer_samples(N_SAMPLES_RL, device, "task4_rl", rl=True)
-
-    print("\n[gen] All samples saved to", OUTPUT_MIDI)
-
+    os.makedirs('outputs/generated_midis', exist_ok=True)
+    
+    with torch.no_grad():
+        for s in range(num_samples):
+            pm = pretty_midi.PrettyMIDI()
+            instrument = pretty_midi.Instrument(program=0)
+            
+            for seg in range(num_segments):
+                z = torch.randn(1, 128).to(device) 
+                
+                h_d = torch.relu(model.fc_latent(z)).unsqueeze(0)
+                decoder_input = h_d.repeat(1, steps_per_segment, 1).view(1, steps_per_segment, -1)
+                
+                out, _ = model.decoder(decoder_input, (h_d, torch.zeros_like(h_d)))
+                reconstruction = torch.sigmoid(model.output_layer(out)).squeeze(0).cpu().numpy()
+                
+                tensor_to_instrument(reconstruction, instrument, start_offset=seg*duration_per_segment, fs=fs)
+            
+            pm.instruments.append(instrument)
+            output_file = f'outputs/generated_midis/task1_final_{s+1}.mid'
+            pm.write(output_file)
+            print(f"Generated {total_seconds}s file: {output_file}")
 
 if __name__ == "__main__":
-    main()
+    generate_samples()
