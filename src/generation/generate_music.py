@@ -7,19 +7,24 @@ import pretty_midi
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.autoencoder import LSTMAutoencoder
 
-def tensor_to_instrument(tensor, instrument, start_offset, fs=4):
+def tensor_to_instrument(tensor, instrument, start_offset, fs=4, max_notes=4):
     step_duration = 1.0 / fs 
     
-    # Ultra-aggressive threshold to catch MSE's weak outputs
-    max_val = np.max(tensor)
-    if max_val < 0.01:
-        threshold = 0.005
-    else:
-        threshold = max_val * 0.6 
+    # 1. TOP-K MASKING: Enforce human constraints (max 4 notes per time step)
+    binary_mask = np.zeros_like(tensor)
+    for t in range(tensor.shape[0]):
+        # Get the indices of the highest probabilities at this exact millisecond
+        top_indices = np.argsort(tensor[t])[-max_notes:]
+        
+        # Only activate them if they are above a bare minimum noise floor
+        for idx in top_indices:
+            if tensor[t, idx] > 0.02: 
+                binary_mask[t, idx] = 1.0
 
-    for pitch_idx in range(tensor.shape[1]):
+    # 2. NOTE WRITING: Use the clean mask to write MIDI events
+    for pitch_idx in range(binary_mask.shape[1]):
         pitch = pitch_idx + 21 
-        notes = tensor[:, pitch_idx] > threshold 
+        notes = binary_mask[:, pitch_idx] > 0.5 # Mask is already 1.0 or 0.0
         
         start_time = None
         for i, val in enumerate(notes):
@@ -32,7 +37,7 @@ def tensor_to_instrument(tensor, instrument, start_offset, fs=4):
                 start_time = None
         
         if start_time is not None:
-            end_time = start_offset + (tensor.shape[0] * step_duration)
+            end_time = start_offset + (binary_mask.shape[0] * step_duration)
             note = pretty_midi.Note(velocity=100, pitch=pitch, start=start_time, end=end_time)
             instrument.notes.append(note)
 
