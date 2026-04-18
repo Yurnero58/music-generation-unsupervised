@@ -38,7 +38,7 @@ def generate():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LSTMAutoencoder().to(device)
     
-    # Load your successfully trained weights
+    # Load your weights (your training was successful, do NOT retrain)
     model.load_state_dict(torch.load('src/models/ae_weights.pt', map_location=device))
     model.eval()
     
@@ -47,50 +47,55 @@ def generate():
     
     with torch.no_grad():
         for i in range(5):
-            # 1. Get a random seed
             idx = np.random.randint(0, len(seed_data))
             seed = torch.from_numpy(np.copy(seed_data[idx])).float().unsqueeze(0).to(device)
             
-            # Encode seed to get the context (z)
             _, (h_n, _) = model.encoder(seed)
             z = model.fc_latent(h_n[-1])
             
             h = model.fc_dec_init(z).unsqueeze(0)
             c = torch.zeros_like(h)
             
-            seq_len = 128 # 32 seconds of music
-            
-            # FIX 1: Start the loop with the LAST step of the actual music, not pure silence
-            decoder_input = seed[:, -1:, :] 
-            
+            # ==========================================
+            # FIX 1: DECODER WARM-UP (PROMPT INGESTION)
+            # Pass the entire seed through the decoder first
+            # so it builds actual musical momentum.
+            # ==========================================
+            for t in range(seed.shape[1]):
+                decoder_input = seed[:, t:t+1, :]
+                out, (h, c) = model.decoder(decoder_input, (h, c))
+                
+            # Start generating 32 seconds of new music
+            seq_len = 128 
             generated_matrix = np.zeros((seq_len, 88))
+            current_input = seed[:, -1:, :] # Start with the last true note
             
             for t in range(seq_len):
-                out, (h, c) = model.decoder(decoder_input, (h, c))
+                out, (h, c) = model.decoder(current_input, (h, c))
                 pred = torch.sigmoid(model.fc_out(out))
                 
-                # Get raw probabilities for this specific 1/4 second
-                prob_array = pred.squeeze(0).squeeze(0).cpu().numpy()
-                
-                # FIX 2: Dynamic Sampling to prevent infinite silence loops
-                step_max = np.max(prob_array)
+                prob_array = pred.squeeze().cpu().numpy()
                 binary_step = np.zeros(88)
                 
-                if step_max > 0.01:
-                    # Normalize and pick notes that are highly confident relative to the max
-                    normalized = prob_array / step_max
-                    binary_step[normalized > 0.8] = 1.0
+                # ==========================================
+                # FIX 2: TOP-K SAMPLING & ANTI-SILENCE
+                # Grab the top 3 loudest notes. If they are even slightly
+                # above the noise floor (0.05), play them.
+                # ==========================================
+                top_indices = np.argsort(prob_array)[-3:]
+                for p_idx in top_indices:
+                    if prob_array[p_idx] > 0.05:
+                        binary_step[p_idx] = 1.0
+                        
+                # Anti-Silence Lock: If the model panics and outputs nothing,
+                # just hold the chord from the previous time step.
+                if np.sum(binary_step) == 0 and t > 0:
+                    binary_step = generated_matrix[t-1, :]
                     
-                    # Cap polyphony to 4 notes max to prevent cluster-chord noise
-                    if np.sum(binary_step) > 4:
-                        top_4 = np.argsort(prob_array)[-4:]
-                        binary_step = np.zeros(88)
-                        binary_step[top_4] = 1.0
-                
                 generated_matrix[t, :] = binary_step
                 
                 # Feed exactly what we just played into the next step
-                decoder_input = torch.tensor(binary_step).float().unsqueeze(0).unsqueeze(0).to(device)
+                current_input = torch.tensor(binary_step).float().unsqueeze(0).unsqueeze(0).to(device)
             
             out_file = f'outputs/generated_midis/task1_proper_{i+1}.mid'
             matrix_to_midi(generated_matrix, out_file)
