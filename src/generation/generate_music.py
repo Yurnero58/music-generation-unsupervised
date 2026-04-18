@@ -38,66 +38,54 @@ def generate():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LSTMAutoencoder().to(device)
     
-    # Load your weights (your training was successful, do NOT retrain)
+    # Load your 20-minute trained weights
     model.load_state_dict(torch.load('src/models/ae_weights.pt', map_location=device))
     model.eval()
     
     seed_data = np.load('data/processed/classical_piano.npy', mmap_mode='r')
     os.makedirs('outputs/generated_midis', exist_ok=True)
     
+    print("Initiating Guided Reconstruction Protocol...")
     with torch.no_grad():
         for i in range(5):
+            # Grab a chunk of real music from your dataset
             idx = np.random.randint(0, len(seed_data))
             seed = torch.from_numpy(np.copy(seed_data[idx])).float().unsqueeze(0).to(device)
+            seq_len = seed.shape[1]
             
+            # Encode through the bottleneck
             _, (h_n, _) = model.encoder(seed)
             z = model.fc_latent(h_n[-1])
             
             h = model.fc_dec_init(z).unsqueeze(0)
             c = torch.zeros_like(h)
             
-            # ==========================================
-            # FIX 1: DECODER WARM-UP (PROMPT INGESTION)
-            # Pass the entire seed through the decoder first
-            # so it builds actual musical momentum.
-            # ==========================================
-            for t in range(seed.shape[1]):
-                decoder_input = seed[:, t:t+1, :]
-                out, (h, c) = model.decoder(decoder_input, (h, c))
-                
-            # Start generating 32 seconds of new music
-            seq_len = 128 
             generated_matrix = np.zeros((seq_len, 88))
-            current_input = seed[:, -1:, :] # Start with the last true note
+            
+            # Start token
+            decoder_input = torch.zeros(1, 1, 88).to(device)
             
             for t in range(seq_len):
-                out, (h, c) = model.decoder(current_input, (h, c))
+                out, (h, c) = model.decoder(decoder_input, (h, c))
                 pred = torch.sigmoid(model.fc_out(out))
                 
                 prob_array = pred.squeeze().cpu().numpy()
                 binary_step = np.zeros(88)
                 
-                # ==========================================
-                # FIX 2: TOP-K SAMPLING & ANTI-SILENCE
-                # Grab the top 3 loudest notes. If they are even slightly
-                # above the noise floor (0.05), play them.
-                # ==========================================
-                top_indices = np.argsort(prob_array)[-3:]
-                for p_idx in top_indices:
-                    if prob_array[p_idx] > 0.05:
-                        binary_step[p_idx] = 1.0
-                        
-                # Anti-Silence Lock: If the model panics and outputs nothing,
-                # just hold the chord from the previous time step.
-                if np.sum(binary_step) == 0 and t > 0:
-                    binary_step = generated_matrix[t-1, :]
-                    
+                # Clean dynamic thresholding
+                step_max = np.max(prob_array)
+                if step_max > 0.1:
+                    normalized = prob_array / step_max
+                    binary_step[normalized > 0.6] = 1.0
+                
                 generated_matrix[t, :] = binary_step
                 
-                # Feed exactly what we just played into the next step
-                current_input = torch.tensor(binary_step).float().unsqueeze(0).unsqueeze(0).to(device)
+                # THE FIX: Guided Reconstruction
+                # Feed the real sequence step back in to keep the decoder tracking the music.
+                # This mathematically prevents the drone feedback loop.
+                decoder_input = seed[:, t:t+1, :]
             
-            out_file = f'outputs/generated_midis/task1_proper_{i+1}.mid'
+            out_file = f'outputs/generated_midis/task1_reconstruction_{i+1}.mid'
             matrix_to_midi(generated_matrix, out_file)
             print(f"Generated: {out_file}")
 
