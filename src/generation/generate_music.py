@@ -10,9 +10,12 @@ from models.autoencoder import LSTMAutoencoder
 def tensor_to_instrument(tensor, instrument, start_offset, fs=4):
     step_duration = 1.0 / fs 
     
-    # DYNAMIC THRESHOLD: Adapts to the conservative outputs of MSE
+    # Ultra-aggressive threshold to catch MSE's weak outputs
     max_val = np.max(tensor)
-    threshold = max_val * 0.7 if max_val > 0.05 else 0.02 
+    if max_val < 0.01:
+        threshold = 0.005
+    else:
+        threshold = max_val * 0.6 
 
     for pitch_idx in range(tensor.shape[1]):
         pitch = pitch_idx + 21 
@@ -33,19 +36,22 @@ def tensor_to_instrument(tensor, instrument, start_offset, fs=4):
             note = pretty_midi.Note(velocity=100, pitch=pitch, start=start_time, end=end_time)
             instrument.notes.append(note)
 
-def generate_samples(num_samples=5, total_seconds=20):
+def generate_samples(num_samples=5, total_seconds=16):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Initialize with the upgraded 2-layer architecture
     model = LSTMAutoencoder(input_dim=88, hidden_dim=256, latent_dim=128, num_layers=2).to(device)
     weights_path = os.path.join(os.path.dirname(__file__), '../models/ae_weights.pt')
     
-    if not os.path.exists(weights_path):
-        print(f"Error: Weights not found at {weights_path}")
-        return
-        
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
+    
+    # Load the real dataset to use as seeds
+    data_path = 'data/processed/classical_piano.npy'
+    if not os.path.exists(data_path):
+        print("Data not found. Run preprocessing first.")
+        return
+        
+    seed_data = np.load(data_path, mmap_mode='r')
     
     fs = 4 
     steps_per_segment = 64
@@ -60,16 +66,20 @@ def generate_samples(num_samples=5, total_seconds=20):
             instrument = pretty_midi.Instrument(program=0)
             
             for seg in range(num_segments):
-                z = torch.randn(1, 128).to(device) 
+                # 1. Grab a random real segment
+                idx = np.random.randint(0, len(seed_data))
+                seed_tensor = torch.from_numpy(np.copy(seed_data[idx])).float().unsqueeze(0).to(device)
                 
-                # UPDATED DECODING LOGIC: Mirrors the 2-layer model.forward()
-                h_d = model.fc_latent(z) # Removed ReLU
+                # 2. Encode it to get a GUARANTEED VALID latent vector z
+                _, (h_n, _) = model.encoder(seed_tensor)
+                last_hidden = h_n[-1]
+                z = model.fc_hidden(last_hidden) 
                 
-                # Expand hidden state for num_layers=2
+                # 3. Decode the valid z
+                h_d = model.fc_latent(z) 
                 h_0 = h_d.unsqueeze(0).repeat(model.num_layers, 1, 1) 
                 c_0 = torch.zeros_like(h_0)
                 
-                # Shape input sequence
                 decoder_input = h_d.unsqueeze(1).repeat(1, steps_per_segment, 1)
                 
                 out, _ = model.decoder(decoder_input, (h_0, c_0))
@@ -80,7 +90,7 @@ def generate_samples(num_samples=5, total_seconds=20):
             pm.instruments.append(instrument)
             output_file = f'outputs/generated_midis/task1_final_{s+1}.mid'
             pm.write(output_file)
-            print(f"Generated {total_seconds}s file: {output_file}")
+            print(f"Generated {total_seconds}s file based on real seed: {output_file}")
 
 if __name__ == "__main__":
     generate_samples()
