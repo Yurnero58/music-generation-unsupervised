@@ -11,10 +11,15 @@ from models.vae import MusicVAE
 from preprocessing.piano_roll import get_loader
 
 def vae_loss(recon_x, x, mu, logvar, beta=0.1):
-    # Total VAE objective: LV AE = Lrecon + beta * LKL
-    recon_loss = nn.functional.binary_cross_entropy(recon_x, x, reduction='sum')
-    # KL divergence
+    # Ensure target x is strictly between 0 and 1 to avoid BCE RuntimeError
+    x_clamped = torch.clamp(x, 0.0, 1.0)
+    
+    # Reconstruction loss (BCE)
+    recon_loss = nn.functional.binary_cross_entropy(recon_x, x_clamped, reduction='sum')
+    
+    # KL divergence loss
     kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+    
     return (recon_loss + beta * kl_loss) / x.size(0)
 
 def train():
@@ -26,7 +31,7 @@ def train():
     data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data/processed/multi_genre_lmd.npy'))
     train_loader = get_loader(data_path, batch_size=64)
     
-    epochs = 50
+    epochs = 25
     print(f"Starting Task 2 Training on {device}...")
     
     for epoch in range(epochs):
