@@ -18,7 +18,7 @@ def generate_task2_samples(num_samples=8):
     weights_path = '/content/music-generation-unsupervised/src/models/vae_weights.pt'
     
     if not os.path.exists(weights_path):
-        print(f"Error: Weights not found at {weights_path}. Please train the model first.")
+        print(f"Error: Weights not found. Please run training first.")
         return
 
     model.load_state_dict(torch.load(weights_path, map_location=device))
@@ -27,12 +27,12 @@ def generate_task2_samples(num_samples=8):
     output_dir = '/content/music-generation-unsupervised/outputs/task2'
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"Generating {num_samples} diverse samples from the upgraded latent space...")
+    print(f"Generating {num_samples} samples from the 512/256 architecture...")
 
     with torch.no_grad():
         for i in range(num_samples):
-            # Sample z ~ N(0, I)
-            z = torch.randn(1, 256).to(device) # Updated to 256
+            # Sample z ~ N(0, I) with size 256
+            z = torch.randn(1, 256).to(device) 
             
             h = model.fc_dec_init(z).unsqueeze(0)
             c = torch.zeros_like(h)
@@ -48,7 +48,7 @@ def generate_task2_samples(num_samples=8):
             matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
             midi_path = os.path.join(output_dir, f"diverse_sample_{i+1}.mid")
             
-            # Lowered threshold to 0.15 to capture more notes in early training
+            # Lowered threshold to ensure notes are captured
             matrix_to_midi(matrix > 0.15, midi_path) 
             print(f"Saved: {midi_path}")
 
