@@ -43,5 +43,5 @@ def preprocess_lmd_multi_genre(root_dir, output_file, window_size=64, fs=4):
 
 if __name__ == "__main__":
     # Pointing to the specific path you confirmed
-    data_path = 'music-generation-unsupervised/data/lakh_clean'
+    data_path = 'music-generation-unsupervised/data/raw_midi/lakh_clean'
     preprocess_lmd_multi_genre(data_path, 'data/processed/multi_genre_lmd.npy')
