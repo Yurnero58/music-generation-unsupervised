@@ -1,6 +1,5 @@
 data/raw_midi/
 data/processed/
-outputs/generated_midis/
 outputs/models/
 *.pth
 *.pt
