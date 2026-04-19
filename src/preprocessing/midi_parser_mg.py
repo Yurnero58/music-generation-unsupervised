@@ -6,14 +6,12 @@ import pretty_midi
 def preprocess_lmd_multi_genre(root_dir, output_file, window_size=64, fs=4):
     processed_data = []
     
-    # Using the absolute path from your screenshot
     if not os.path.exists(root_dir):
         print(f"Error: {root_dir} not found!")
         return
 
-    # subdirs in lakh_clean are organized by artist/genre
     subdirs = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
-    print(f"Found {len(subdirs)} folders. Processing for Task 2...")
+    print(f"Found {len(subdirs)} artist folders. Processing...")
 
     for subdir in subdirs[:400]: 
         subdir_path = os.path.join(root_dir, subdir)
@@ -22,7 +20,7 @@ def preprocess_lmd_multi_genre(root_dir, output_file, window_size=64, fs=4):
         for file in files[:2]: 
             try:
                 midi = pretty_midi.PrettyMIDI(file)
-                # Task 2 Requirement: Multi-genre generation
+                # Filter to 88 piano keys
                 roll = midi.get_piano_roll(fs=fs)[21:109, :] / 127.0
                 roll = roll.T 
                 
@@ -38,9 +36,8 @@ def preprocess_lmd_multi_genre(root_dir, output_file, window_size=64, fs=4):
         np.save(output_file, np.array(processed_data))
         print(f"Task 2 Dataset Ready: {len(processed_data)} segments saved to {output_file}")
     else:
-        print("Error: Path found, but no MIDI files were discovered. Check subfolder contents.")
+        print("Error: No MIDI segments found.")
 
 if __name__ == "__main__":
-    # ABSOLUTE PATH based on your image_a44d5e.png
     data_path = '/content/music-generation-unsupervised/data/raw_midi/lakh_clean'
     preprocess_lmd_multi_genre(data_path, 'data/processed/multi_genre_lmd.npy')

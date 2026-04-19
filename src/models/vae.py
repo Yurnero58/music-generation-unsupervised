@@ -5,14 +5,12 @@ class MusicVAE(nn.Module):
     def __init__(self, input_dim=88, hidden_dim=512, latent_dim=256):
         super(MusicVAE, self).__init__()
         
-        # ENCODER: Bidirectional LSTM to capture long-term genre context
+        # ENCODER: Learns the mean and log-variance of the latent distribution
         self.encoder = nn.LSTM(input_dim, hidden_dim, batch_first=True, bidirectional=True)
-        
-        # Latent heads for mu and log-variance
         self.fc_mu = nn.Linear(hidden_dim * 2, latent_dim)
         self.fc_logvar = nn.Linear(hidden_dim * 2, latent_dim)
         
-        # DECODER: Translates latent z back into 88-key piano roll
+        # DECODER: Reconstructs the 88-key piano roll from latent sample z
         self.fc_dec_init = nn.Linear(latent_dim, hidden_dim)
         self.decoder = nn.LSTM(input_dim, hidden_dim, batch_first=True)
         self.fc_out = nn.Linear(hidden_dim, input_dim)
@@ -26,7 +24,7 @@ class MusicVAE(nn.Module):
     def forward(self, x, teacher_forcing_ratio=0.5):
         batch_size, seq_len, _ = x.size()
         
-        # Encode to latent distribution
+        # Encoding phase
         _, (h_n, _) = self.encoder(x)
         h_cat = torch.cat((h_n[-2,:,:], h_n[-1,:,:]), dim=1)
         
@@ -34,7 +32,7 @@ class MusicVAE(nn.Module):
         logvar = self.fc_logvar(h_cat)
         z = self.reparameterize(mu, logvar)
         
-        # Initial decoder state
+        # Decoding phase
         h = self.fc_dec_init(z).unsqueeze(0)
         c = torch.zeros_like(h)
         
@@ -46,7 +44,7 @@ class MusicVAE(nn.Module):
             pred = torch.sigmoid(self.fc_out(out))
             outputs[:, t:t+1, :] = pred
             
-            # Teacher forcing helps stabilize training on complex datasets
+            # Teacher forcing for multi-genre stability
             if self.training and torch.rand(1).item() < teacher_forcing_ratio:
                 decoder_input = x[:, t:t+1, :]
             else:
