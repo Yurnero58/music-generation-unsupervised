@@ -12,19 +12,15 @@ from models.transformer import MusicTransformer
 from preprocessing.piano_roll import get_loader
 
 def train():
+    # Use CUDA_LAUNCH_BLOCKING for cleaner error reporting if it crashes again
+    os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MusicTransformer().to(device)
+    
+    model = MusicTransformer(input_dim=88, d_model=256, nhead=8).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.0001)
-    # Using Binary Cross Entropy for multi-label note prediction
     criterion = nn.BCELoss() 
 
-    # CORRECTED PATH: Using your existing Lakh processed data
     data_path = '/content/music-generation-unsupervised/data/processed/multi_genre_lmd.npy'
-    
-    if not os.path.exists(data_path):
-        print(f"Error: {data_path} not found. Run your Task 2 parser first!")
-        return
-
     train_loader = get_loader(data_path, batch_size=32)
 
     print(f"Starting Task 3 (Transformer) Training on {device}...")
@@ -39,21 +35,23 @@ def train():
             mask = model.generate_mask(batch.size(1)).to(device)
             output = model(batch, mask)
             
-            # Autoregressive loss: predict next token
-            loss = criterion(output[:, :-1, :], batch[:, 1:, :])
+            # FIX: Clamp target batch to [0, 1] to prevent CUDA Assert error
+            target = torch.clamp(batch[:, 1:, :], 0.0, 1.0)
+            input_seq = output[:, :-1, :]
+            
+            loss = criterion(input_seq, target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         
         avg_loss = total_loss / len(train_loader)
-        # Deliverable: Perplexity = exp(1/T * LTR)
+        # Deliverable: Perplexity = exp(LTR)
         perplexity = np.exp(avg_loss)
         print(f"Epoch {epoch+1}/30 | Loss: {avg_loss:.4f} | Perplexity: {perplexity:.2f}")
 
-    # Save weights specifically for the Transformer
     save_path = '/content/music-generation-unsupervised/src/models/transformer_weights.pt'
     torch.save(model.state_dict(), save_path)
-    print(f"Transformer Weights Saved to {save_path}")
+    print(f"Weights saved to {save_path}")
 
 if __name__ == "__main__":
     train()
