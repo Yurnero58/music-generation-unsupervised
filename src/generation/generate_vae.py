@@ -27,7 +27,7 @@ def generate_pure_reconstruction(num_samples=3):
     data_path = '/content/music-generation-unsupervised/data/processed/multi_track_lmd.npy'
     seed_data = np.load(data_path, mmap_mode='r')
     
-    print("Initiating STRICT DETERMINISTIC Reconstruction...")
+    print("Initiating STRICT GUIDED Reconstruction...")
 
     with torch.no_grad():
         for i in range(num_samples):
@@ -56,7 +56,7 @@ def generate_pure_reconstruction(num_samples=3):
             
             mu = model.fc_mu(h_cat)
             
-            # THE FIX #1: Zero Latent Noise. Force the exact mean.
+            # Zero Latent Noise. Force the exact mean.
             z = mu 
             
             # 3. Decode Autoregressively
@@ -70,13 +70,15 @@ def generate_pure_reconstruction(num_samples=3):
                 out, (h, c) = model.decoder(decoder_input, (h, c))
                 probs = torch.sigmoid(model.fc_out(out))
                 
-                # THE FIX #2: Greedy Decoding. No dice rolls, no Bernoulli sampling.
-                # If probability > 50%, turn the note ON. Else OFF.
-                sample = (probs > 0.5).float()
+                # THE FIX #1: Forgiving Greedy Threshold. 
+                # Ensure the notes fire even if the model is slightly hesitant.
+                sample = (probs > 0.25).float()
                 generated_seq.append(sample)
                 
-                # Feed the prediction back in for the next step
-                decoder_input = sample
+                # THE FIX #2: Guided Reconstruction (Teacher Forcing)
+                # Feed the REAL note from the original song into the next step.
+                # This guarantees the LSTM cannot derail into garbage noise.
+                decoder_input = seed_tensor[:, t:t+1, :]
             
             matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
             recon_path = os.path.join(output_dir, f"pure_reconstruction_{i+1}.mid")
