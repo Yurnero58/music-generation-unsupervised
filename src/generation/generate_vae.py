@@ -17,7 +17,6 @@ def generate_reconstructions(num_samples=8):
     output_dir = '/content/music-generation-unsupervised/outputs/task2'
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load the actual dataset to pick real songs
     data_path = '/content/music-generation-unsupervised/data/processed/multi_track_lmd.npy'
     if not os.path.exists(data_path):
         print(f"Error: Could not find dataset at {data_path}")
@@ -28,15 +27,14 @@ def generate_reconstructions(num_samples=8):
 
     with torch.no_grad():
         for i in range(num_samples):
-            # 1. Pick a random real song from the dataset
+            # 1. Pick a random real song
             idx = np.random.randint(0, len(seed_data))
             seed_matrix = seed_data[idx]
             
-            # Save the ORIGINAL song so you can compare how well the VAE learned it
             original_path = os.path.join(output_dir, f"original_song_{i+1}.mid")
             multi_matrix_to_midi(seed_matrix > 0.5, original_path)
             
-            # 2. Encode the real song to get its specific latent signature
+            # 2. Encode to latent space
             seed_tensor = torch.from_numpy(np.copy(seed_matrix)).float().unsqueeze(0).to(device)
             seq_len = seed_tensor.shape[1]
             
@@ -47,7 +45,7 @@ def generate_reconstructions(num_samples=8):
             logvar = model.fc_logvar(h_cat)
             z = model.reparameterize(mu, logvar)
             
-            # 3. Decode from that specific artist's signature
+            # 3. Decode
             h = model.fc_dec_init(z).unsqueeze(0)
             c = torch.zeros_like(h)
             
@@ -58,20 +56,20 @@ def generate_reconstructions(num_samples=8):
                 out, (h, c) = model.decoder(decoder_input, (h, c))
                 probs = torch.sigmoid(model.fc_out(out))
                 
-                # Clean thresholding for sharper notes
+                # THE FIX: Softer thresholding to catch the VAE's "blurry" predictions
                 prob_array = probs.squeeze().cpu().numpy()
                 binary_step = np.zeros(352)
-                step_max = np.max(prob_array)
                 
-                if step_max > 0.15:
-                    normalized = prob_array / step_max
-                    binary_step[normalized > 0.6] = 1.0
+                # If the probability is above 10%, play the note. 
+                # This guarantees we hear what the model is trying to do.
+                binary_step[prob_array > 0.10] = 1.0 
                 
                 sample = torch.tensor(binary_step, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
                 generated_seq.append(sample)
                 
-                # Autoregressive feed-forward
-                decoder_input = sample
+                # THE FIX: Guided Reconstruction (Teacher Forcing)
+                # Feed the REAL note into the next step so the model never falls asleep
+                decoder_input = seed_tensor[:, t:t+1, :]
             
             matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
             recon_path = os.path.join(output_dir, f"reconstructed_song_{i+1}.mid")
