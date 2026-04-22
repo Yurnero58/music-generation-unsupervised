@@ -1,13 +1,10 @@
-import sys
-import os
-import torch
-import numpy as np
 import pretty_midi
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from models.autoencoder import LSTMAutoencoder
+import numpy as np
 
 def matrix_to_midi(matrix, output_path, fs=4):
+    """
+    TASK 1: Converts an 88-dimension matrix into a single-track piano MIDI.
+    """
     pm = pretty_midi.PrettyMIDI()
     instrument = pretty_midi.Instrument(program=0)
     step_duration = 1.0 / fs
@@ -34,60 +31,35 @@ def matrix_to_midi(matrix, output_path, fs=4):
     pm.instruments.append(instrument)
     pm.write(output_path)
 
-def generate():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = LSTMAutoencoder().to(device)
-    
-    # Load your 20-minute trained weights
-    model.load_state_dict(torch.load('src/models/ae_weights.pt', map_location=device))
-    model.eval()
-    
-    seed_data = np.load('data/processed/classical_piano.npy', mmap_mode='r')
-    os.makedirs('outputs/generated_midis', exist_ok=True)
-    
-    print("Initiating Guided Reconstruction Protocol...")
-    with torch.no_grad():
-        for i in range(5):
-            # Grab a chunk of real music from your dataset
-            idx = np.random.randint(0, len(seed_data))
-            seed = torch.from_numpy(np.copy(seed_data[idx])).float().unsqueeze(0).to(device)
-            seq_len = seed.shape[1]
-            
-            # Encode through the bottleneck
-            _, (h_n, _) = model.encoder(seed)
-            z = model.fc_latent(h_n[-1])
-            
-            h = model.fc_dec_init(z).unsqueeze(0)
-            c = torch.zeros_like(h)
-            
-            generated_matrix = np.zeros((seq_len, 88))
-            
-            # Start token
-            decoder_input = torch.zeros(1, 1, 88).to(device)
-            
-            for t in range(seq_len):
-                out, (h, c) = model.decoder(decoder_input, (h, c))
-                pred = torch.sigmoid(model.fc_out(out))
-                
-                prob_array = pred.squeeze().cpu().numpy()
-                binary_step = np.zeros(88)
-                
-                # Clean dynamic thresholding
-                step_max = np.max(prob_array)
-                if step_max > 0.1:
-                    normalized = prob_array / step_max
-                    binary_step[normalized > 0.6] = 1.0
-                
-                generated_matrix[t, :] = binary_step
-                
-                # THE FIX: Guided Reconstruction
-                # Feed the real sequence step back in to keep the decoder tracking the music.
-                # This mathematically prevents the drone feedback loop.
-                decoder_input = seed[:, t:t+1, :]
-            
-            out_file = f'outputs/generated_midis/task1_reconstruction_{i+1}.mid'
-            matrix_to_midi(generated_matrix, out_file)
-            print(f"Generated: {out_file}")
 
-if __name__ == "__main__":
-    generate()
+def multi_matrix_to_midi(matrix, output_path, fs=10):
+    """
+    TASKS 2-4: Converts a 352-dimension matrix back into 4 separate MIDI tracks.
+    (Drums, Piano, Guitar, Synth Strings)
+    """
+    pm = pretty_midi.PrettyMIDI()
+    
+    drums = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    piano = pretty_midi.Instrument(program=0, is_drum=False, name="Piano")
+    guitar = pretty_midi.Instrument(program=27, is_drum=False, name="Guitar")
+    synth = pretty_midi.Instrument(program=50, is_drum=False, name="Synth Strings")
+    
+    instruments = [drums, piano, guitar, synth]
+    
+    for t in range(matrix.shape[0]):
+        for i in range(4):
+            track_slice = matrix[t, (i*88):((i+1)*88)]
+            
+            for pitch in range(88):
+                if track_slice[pitch] > 0.5:
+                    note = pretty_midi.Note(
+                        velocity=100, pitch=pitch + 21,
+                        start=t / fs, end=(t + 1) / fs
+                    )
+                    instruments[i].notes.append(note)
+                    
+    for inst in instruments:
+        if len(inst.notes) > 0:
+            pm.instruments.append(inst)
+            
+    pm.write(output_path)
