@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import numpy as np
+import random
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.vae import MusicVAE
@@ -23,18 +24,21 @@ def generate_reconstructions(num_samples=8):
         return
         
     seed_data = np.load(data_path, mmap_mode='r')
-    print(f"Loaded dataset. Generating {num_samples} Guided Reconstructions...")
+    print(f"Loaded dataset. Generating {num_samples} WILDLY different reconstructions...")
 
     with torch.no_grad():
         for i in range(num_samples):
-            # 1. Pick a random real song
+            # 1. TEMPO MUTATION: Randomize the speed of the song
+            # Lower fs = very slow/sludgy. Higher fs = very fast/frantic.
+            current_fs = random.choice([4, 6, 9, 14, 18, 22])
+            
+            # 2. RHYTHM MUTATION: Randomize the threshold gate
+            # High threshold = sparse notes. Low threshold = dense walls of sound.
+            current_threshold = random.uniform(0.05, 0.30)
+            
             idx = np.random.randint(0, len(seed_data))
             seed_matrix = seed_data[idx]
             
-            original_path = os.path.join(output_dir, f"original_song_{i+1}.mid")
-            multi_matrix_to_midi(seed_matrix > 0.5, original_path)
-            
-            # 2. Encode to latent space
             seed_tensor = torch.from_numpy(np.copy(seed_matrix)).float().unsqueeze(0).to(device)
             seq_len = seed_tensor.shape[1]
             
@@ -45,7 +49,9 @@ def generate_reconstructions(num_samples=8):
             logvar = model.fc_logvar(h_cat)
             z = model.reparameterize(mu, logvar)
             
-            # 3. Decode
+            # 3. LATENT MUTATION: Smash the latent space with heavy noise to break the "average" curse
+            z = z + (torch.randn_like(z) * 1.8)
+            
             h = model.fc_dec_init(z).unsqueeze(0)
             c = torch.zeros_like(h)
             
@@ -56,26 +62,27 @@ def generate_reconstructions(num_samples=8):
                 out, (h, c) = model.decoder(decoder_input, (h, c))
                 probs = torch.sigmoid(model.fc_out(out))
                 
-                # THE FIX: Softer thresholding to catch the VAE's "blurry" predictions
                 prob_array = probs.squeeze().cpu().numpy()
                 binary_step = np.zeros(352)
                 
-                # If the probability is above 10%, play the note. 
-                # This guarantees we hear what the model is trying to do.
-                binary_step[prob_array > 0.10] = 1.0 
+                # Apply the randomized rhythm gate
+                binary_step[prob_array > current_threshold] = 1.0 
                 
                 sample = torch.tensor(binary_step, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
                 generated_seq.append(sample)
                 
-                # THE FIX: Guided Reconstruction (Teacher Forcing)
-                # Feed the REAL note into the next step so the model never falls asleep
+                # Teacher forcing
                 decoder_input = seed_tensor[:, t:t+1, :]
             
             matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
-            recon_path = os.path.join(output_dir, f"reconstructed_song_{i+1}.mid")
             
-            multi_matrix_to_midi(matrix > 0.5, recon_path)
-            print(f"Saved: Original vs. Reconstruction Pair {i+1}")
+            # Name includes the tempo so you know it worked
+            recon_path = os.path.join(output_dir, f"mutated_track_{i+1}_Tempo{current_fs}.mid")
+            
+            # Inject the random tempo directly into the MIDI creator
+            multi_matrix_to_midi(matrix > 0.5, recon_path, fs=current_fs)
+            
+            print(f"Saved: Track {i+1} | Speed: {current_fs} FPS | Rhythm Gate: {current_threshold:.2f}")
 
 if __name__ == "__main__":
     generate_reconstructions()
