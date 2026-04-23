@@ -25,12 +25,8 @@ def generate_tokens(model, start_token_id, max_length=1024, temperature=0.9, dev
 def tokens_to_midi(string_tokens, output_path):
     """Converts a list of string events back into a playable MIDI file."""
     midi = pretty_midi.PrettyMIDI()
-    
-    # --- YOUR INSTRUMENT CHOICE HERE ---
-    # Example: Electric Piano 1 (Lo-Fi vibe). Change the string to whatever you want!
-    program = pretty_midi.instrument_name_to_program('Electric Piano 1')
-    instrument = pretty_midi.Instrument(program=program)
-    # -----------------------------------
+    piano_program = pretty_midi.instrument_name_to_program('Acoustic Grand Piano')
+    piano = pretty_midi.Instrument(program=piano_program)
     
     current_time = 0.0
     current_velocity = 64 # Default velocity
@@ -56,12 +52,9 @@ def tokens_to_midi(string_tokens, output_path):
                 start_time, vel = active_notes.pop(pitch)
                 # Create the note and add it to the instrument
                 note = pretty_midi.Note(velocity=vel, pitch=pitch, start=start_time, end=current_time)
+                piano.notes.append(note)
                 
-                # FIXED: We use 'instrument' here instead of 'piano'
-                instrument.notes.append(note)
-                
-    # FIXED: We append the 'instrument' to the midi file instead of 'piano'
-    midi.instruments.append(instrument)
+    midi.instruments.append(piano)
     midi.write(output_path)
 
 def generate_10_compositions():
