@@ -8,7 +8,7 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from src.models.transformer import MusicTransformer
 from src.preprocessing.tokenizer import MusicTokenizer
-from src.rlhf.reward_model import MusicRewardModel
+from src.models.reward_model import MusicRewardModel
 
 def generate_sequence_for_rl(model, start_token_id, max_length=200, device="cuda"):
     """Generates a sequence without gradients to save memory during sampling."""
