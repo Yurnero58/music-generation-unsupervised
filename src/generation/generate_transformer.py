@@ -71,7 +71,7 @@ def generate_10_compositions():
     weights_path = '/content/music-generation-unsupervised/src/models/transformer_rlhf_weights.pt'
     model.load_state_dict(torch.load(weights_path, map_location=device))
     
-    output_dir = '/content/music-generation-unsupervised/outputs/transformer/'
+    output_dir = '/content/music-generation-unsupervised/outputs/transformer1/'
     os.makedirs(output_dir, exist_ok=True)
     
     sos_token_id = tokenizer.token_to_id[tokenizer.sos_token]
