@@ -3,6 +3,7 @@ import sys
 import torch
 import torch.nn.functional as F
 import pretty_midi
+import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from src.models.transformer import MusicTransformer
@@ -75,19 +76,25 @@ def generate_10_compositions():
     
     sos_token_id = tokenizer.token_to_id[tokenizer.sos_token]
     
-    print("Generating 10 long-sequence compositions...")
+    print("Generating 10 long-sequence compositions for Human Feedback...")
     for i in range(10):
-        # 1. Autoregressive Generation
+        # 1. Autoregressive Generation (This is the array of integers)
         comp_ids = generate_tokens(model, sos_token_id, max_length=1500, temperature=0.95, device=device)
         
         # 2. Decode IDs to String Events
         string_events = tokenizer.decode(comp_ids)
         
-        # 3. Convert Strings to MIDI
-        out_file = os.path.join(output_dir, f'composition_{i+1}.mid')
-        tokens_to_midi(string_events, out_file)
+        # 3. Save as a MIDI file (For humans to listen to)
+        out_mid_file = os.path.join(output_dir, f'composition_{i+1}.mid')
+        tokens_to_midi(string_events, out_mid_file)
         
-        print(f"Composition {i+1} saved to {out_file} (Length: {len(comp_ids)} tokens)")
+        # 4. NEW: Save the raw tokens as a Numpy array (For the Reward Model to read)
+        out_npy_file = os.path.join(output_dir, f'composition_{i+1}.npy')
+        np.save(out_npy_file, np.array(comp_ids, dtype=np.int64))
+        
+        print(f"Saved: {out_mid_file} AND {out_npy_file}")
 
+
+        
 if __name__ == "__main__":
     generate_10_compositions()

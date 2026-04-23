@@ -1,85 +1,99 @@
-import torch
-import torch.optim as optim
 import os
 import sys
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+from tqdm import tqdm
 
-# Ensure PYTHONPATH is correct for imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from src.models.transformer import MusicTransformer
+from src.preprocessing.tokenizer import MusicTokenizer
+from src.rlhf.reward_model import MusicRewardModel
 
-from models.transformer import MusicTransformer
-from models.reward_model import MusicRewardModel
+def generate_sequence_for_rl(model, start_token_id, max_length=200, device="cuda"):
+    """Generates a sequence without gradients to save memory during sampling."""
+    model.eval()
+    sequence = torch.tensor([[start_token_id]], dtype=torch.long).to(device)
+    
+    with torch.no_grad():
+        for _ in range(max_length):
+            logits = model(sequence)
+            probs = F.softmax(logits[:, -1, :], dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            sequence = torch.cat([sequence, next_token], dim=1)
+            
+    return sequence
 
-def train_rlhf():
+def rl_finetune():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Starting RLHF on {device}...")
+
+    # 1. Load Tokenizer
+    tokenizer = MusicTokenizer()
+    tokenizer.load('/content/music-generation-unsupervised/data/processed/tokenizer_vocab.pkl')
+    vocab_size = tokenizer.vocab_size
+    sos_id = tokenizer.token_to_id[tokenizer.sos_token]
+
+    # 2. Load Pretrained Generator (Task 3)
+    generator = MusicTransformer(vocab_size=vocab_size, d_model=256, nhead=8, num_layers=4).to(device)
+    # UPDATED: Added map_location to prevent Colab device mismatch crashes
+    generator.load_state_dict(torch.load('/content/music-generation-unsupervised/src/models/transformer_weights.pt', map_location=device))
     
-    # 1: Initialize policy parameters theta
-    model = MusicTransformer(input_dim=88, d_model=256, nhead=8).to(device)
+    # 3. Load Trained Reward Model
+    reward_model = MusicRewardModel(vocab_size=vocab_size).to(device)
+    # UPDATED: Added map_location
+    reward_model.load_state_dict(torch.load('/content/music-generation-unsupervised/src/models/reward_model.pt', map_location=device))
+    reward_model.eval() # RM is frozen during this step
+
+    # Algorithm Step 1: Initialize Policy parameters
+    # Using a very small learning rate is critical for RL to prevent catastrophic forgetting
+    optimizer = optim.Adam(generator.parameters(), lr=1e-5) 
     
-    weights_path = '/content/music-generation-unsupervised/src/models/transformer_weights.pt'
-    if not os.path.exists(weights_path):
-        print("Error: Task 3 weights not found. You must complete Task 3 first.")
-        return
+    baseline_reward = 5.0 # A running average to stabilize gradients
+
+    # Algorithm Step 2: for iteration = 1 to K
+    K_iterations = 500
+    generator.train()
+    
+    pbar = tqdm(range(K_iterations), desc="RL Fine-tuning")
+    for iteration in pbar:
+        # Algorithm Step 3: Generate music samples X_gen ~ p_theta(X)
+        seq = generate_sequence_for_rl(generator, sos_id, max_length=256, device=device)
         
-    model.load_state_dict(torch.load(weights_path, map_location=device))
-    
-    # Very low learning rate to prevent catastrophic forgetting of Task 3 musical knowledge
-    optimizer = optim.Adam(model.parameters(), lr=5e-6) 
-    reward_model = MusicRewardModel()
-    
-    print(f"Starting Task 4 (RLHF) Optimization on {device}...")
-    
-    epochs = 150 # K iterations
-    seq_len = 64 # Short sequences for faster RL iterations
-    
-    for iteration in range(epochs):
-        model.train()
+        # Algorithm Step 4: Collect feedback score r(X_gen)
+        with torch.no_grad():
+            reward = reward_model(seq).item()
+            
+        # Update baseline (exponential moving average)
+        baseline_reward = 0.9 * baseline_reward + 0.1 * reward
+        advantage = reward - baseline_reward # Center the reward to reduce variance
+
+        # Algorithm Step 6: Policy Gradient Update
         optimizer.zero_grad()
+        logits = generator(seq)
         
-        # 3: Generate music sample: Xgen ~ p(X)
-        generated_seq = [torch.zeros(1, 1, 88).to(device)]
-        log_probs = []
+        # Shift logits and targets for next-token prediction
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_targets = seq[:, 1:].contiguous()
         
-        for t in range(seq_len):
-            input_tensor = torch.cat(generated_seq, dim=1)
-            mask = model.generate_mask(input_tensor.size(1)).to(device)
-            
-            # Get probabilities for next note
-            probs = model(input_tensor, mask)[:, -1:, :]
-            
-            # Sample action and calculate log probability for REINFORCE
-            m = torch.distributions.Bernoulli(probs)
-            action = m.sample()
-            
-            # Sum log probs across the 88 keys
-            log_prob = m.log_prob(action).sum(dim=-1) 
-            log_probs.append(log_prob)
-            
-            generated_seq.append(action)
-            
-        # Compile sequence for scoring
-        full_sequence = torch.cat(generated_seq, dim=1).squeeze(0)
+        # Calculate log probabilities of the exact sequence we generated
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        target_log_probs = torch.gather(log_probs, dim=-1, index=shift_targets.unsqueeze(-1)).squeeze(-1)
         
-        # 4: Collect human preference score: r = HumanScore(Xgen)
-        reward = reward_model.get_reward(full_sequence).to(device)
+        # Objective: J(θ) = E[ r * log p(X) ]. Minimize the negative to maximize.
+        loss = -1 * advantage * target_log_probs.sum()
         
-        # 5 & 6: Compute expected reward objective and Policy Gradient
-        # J(theta) = E[r * log p(X)] --> Loss = -Reward * sum(log_probs)
-        loss = -reward * torch.stack(log_probs).sum()
-        
-        # 7: Update generator parameters
+        # Algorithm Step 7: Update generator parameters
         loss.backward()
-        
-        # Gradient clipping to prevent exploding updates
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0)
         optimizer.step()
         
-        if (iteration + 1) % 10 == 0:
-            print(f"Iteration {iteration+1}/{epochs} | Reward: {reward.item():.4f} | Loss: {loss.item():.4f}")
+        pbar.set_postfix({"Reward": f"{reward:.2f}", "Advantage": f"{advantage:.2f}"})
 
-    # 9: Output RLHF-tuned music generation model
-    save_path = '/content/music-generation-unsupervised/src/models/rlhf_weights.pt'
-    torch.save(model.state_dict(), save_path)
-    print(f"RLHF Tuning Complete. Weights saved to {save_path}")
+    # Algorithm Step 9: Output RLHF-tuned model
+    os.makedirs('/content/music-generation-unsupervised/src/models/', exist_ok=True)
+    torch.save(generator.state_dict(), '/content/music-generation-unsupervised/src/models/transformer_rlhf_weights.pt')
+    print("\nRLHF Tuning Complete.")
 
 if __name__ == "__main__":
-    train_rlhf()
+    rl_finetune()
