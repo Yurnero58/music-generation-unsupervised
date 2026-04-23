@@ -12,7 +12,7 @@ from src.models.reward_model import MusicRewardModel
 
 def generate_sequence_for_rl(model, start_token_id, max_length=200, device="cuda"):
     """Generates a sequence without gradients to save memory during sampling."""
-    model.eval()
+    model.eval() # Switches to evaluation mode (turns off Dropout)
     sequence = torch.tensor([[start_token_id]], dtype=torch.long).to(device)
     
     with torch.no_grad():
@@ -36,28 +36,25 @@ def rl_finetune():
 
     # 2. Load Pretrained Generator (Task 3)
     generator = MusicTransformer(vocab_size=vocab_size, d_model=256, nhead=8, num_layers=4).to(device)
-    # UPDATED: Added map_location to prevent Colab device mismatch crashes
     generator.load_state_dict(torch.load('/content/music-generation-unsupervised/src/models/transformer_weights.pt', map_location=device))
     
     # 3. Load Trained Reward Model
     reward_model = MusicRewardModel(vocab_size=vocab_size).to(device)
-    # UPDATED: Added map_location
     reward_model.load_state_dict(torch.load('/content/music-generation-unsupervised/src/models/reward_model.pt', map_location=device))
     reward_model.eval() # RM is frozen during this step
 
     # Algorithm Step 1: Initialize Policy parameters
-    # Using a very small learning rate is critical for RL to prevent catastrophic forgetting
     optimizer = optim.Adam(generator.parameters(), lr=1e-5) 
     
     baseline_reward = 5.0 # A running average to stabilize gradients
 
     # Algorithm Step 2: for iteration = 1 to K
     K_iterations = 500
-    generator.train()
     
     pbar = tqdm(range(K_iterations), desc="RL Fine-tuning")
     for iteration in pbar:
         # Algorithm Step 3: Generate music samples X_gen ~ p_theta(X)
+        # Note: This function temporarily puts the generator in .eval() mode
         seq = generate_sequence_for_rl(generator, sos_id, max_length=256, device=device)
         
         # Algorithm Step 4: Collect feedback score r(X_gen)
@@ -68,6 +65,10 @@ def rl_finetune():
         baseline_reward = 0.9 * baseline_reward + 0.1 * reward
         advantage = reward - baseline_reward # Center the reward to reduce variance
 
+        # --- BUG FIX: CRITICAL STATE SWITCH ---
+        # Switch generator back to training mode so Dropout is active for the backward pass!
+        generator.train() 
+        
         # Algorithm Step 6: Policy Gradient Update
         optimizer.zero_grad()
         logits = generator(seq)
