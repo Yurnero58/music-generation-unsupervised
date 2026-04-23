@@ -25,8 +25,9 @@ def generate_tokens(model, start_token_id, max_length=1024, temperature=0.9, dev
 def tokens_to_midi(string_tokens, output_path):
     """Converts a list of string events back into a playable MIDI file."""
     midi = pretty_midi.PrettyMIDI()
-    piano_program = pretty_midi.instrument_name_to_program('Acoustic Grand Piano')
-    piano = pretty_midi.Instrument(program=piano_program)
+    # Replaces the piano lines
+    program = pretty_midi.instrument_name_to_program('Lead 2 (sawtooth)')
+    instrument = pretty_midi.Instrument(program=program)
     
     current_time = 0.0
     current_velocity = 64 # Default velocity
