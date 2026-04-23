@@ -68,7 +68,7 @@ def generate_10_compositions():
     
     # Load Model
     model = MusicTransformer(vocab_size=tokenizer.vocab_size, d_model=256, nhead=8, num_layers=4).to(device)
-    weights_path = '/content/music-generation-unsupervised/src/models/transformer_weights.pt'
+    weights_path = '/content/music-generation-unsupervised/src/models/transformer_rlhf_weights.pt'
     model.load_state_dict(torch.load(weights_path, map_location=device))
     
     output_dir = '/content/music-generation-unsupervised/outputs/transformer/'
@@ -95,6 +95,6 @@ def generate_10_compositions():
         print(f"Saved: {out_mid_file} AND {out_npy_file}")
 
 
-        
+
 if __name__ == "__main__":
     generate_10_compositions()
