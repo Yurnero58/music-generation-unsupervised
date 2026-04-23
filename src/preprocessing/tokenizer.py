@@ -1,107 +1,99 @@
-# =============================================================================
-# src/preprocessing/tokenizer.py
-# Event-based MIDI tokenizer for Task 3 (Transformer)
-# Converts piano-roll windows → integer token sequences
-# =============================================================================
-
+import os
+import pickle
 import numpy as np
-import torch
-from pathlib import Path
 
-import sys
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-from config import (N_PITCHES, VELOCITY_BINS, PITCH_RANGE,
-                    PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, MASK_TOKEN,
-                    TR_VOCAB_SIZE, SEQ_LEN)
-
-# Token layout:
-#   0           = PAD
-#   1           = BOS
-#   2           = EOS
-#   3           = MASK
-#   4 … 4+N_P-1            = NOTE_ON  (pitch offset from PITCH_RANGE[0])
-#   4+N_P … 4+N_P+V_BINS-1 = VELOCITY bucket tokens  (unused in simple mode)
-
-NOTE_OFFSET = 4
-VEL_OFFSET  = NOTE_OFFSET + N_PITCHES
-
-
-def pianoroll_to_tokens(roll: np.ndarray) -> list[int]:
+class MusicTokenizer:
     """
-    Convert a piano-roll window (T, n_pitches) → list of token ints.
-    Strategy: for each time step, emit NOTE_ON tokens for active pitches,
-    or a TIME_STEP token if silent.
+    A tokenizer for converting MIDI events or piano roll sequences into 
+    discrete integer tokens for Transformer-based music generation.
     """
-    tokens = [BOS_TOKEN]
-    T, n_p = roll.shape
-    for t in range(T):
-        active = np.where(roll[t] > 0)[0]
-        if len(active) == 0:
-            continue
-        for p in active:
-            tok = NOTE_OFFSET + int(p)
-            tokens.append(tok)
-    tokens.append(EOS_TOKEN)
-    return tokens
+    def __init__(self, num_velocities=32, max_time_shift=100):
+        self.pad_token = "<PAD>"
+        self.sos_token = "<SOS>"  # Start of Sequence
+        self.eos_token = "<EOS>"  # End of Sequence
+        self.unk_token = "<UNK>"  # Unknown token
 
+        self.vocab = [self.pad_token, self.sos_token, self.eos_token, self.unk_token]
+        
+        # 1. Pitch Tokens (Standard MIDI 0-127, though piano is usually 21-108)
+        self.vocab.extend([f"NOTE_ON_{i}" for i in range(128)])
+        self.vocab.extend([f"NOTE_OFF_{i}" for i in range(128)])
+        
+        # 2. Time Shift Tokens (Quantized time steps between notes)
+        self.vocab.extend([f"TIME_SHIFT_{i}" for i in range(1, max_time_shift + 1)])
+        
+        # 3. Velocity Tokens (Loudness, quantized into bins)
+        self.vocab.extend([f"VELOCITY_{i}" for i in range(num_velocities)])
 
-def tokens_to_pianoroll(tokens: list[int], seq_len: int = SEQ_LEN) -> np.ndarray:
-    """Reverse: token list → binary piano-roll (seq_len, n_pitches)."""
-    roll = np.zeros((seq_len, N_PITCHES), dtype=np.float32)
-    step = 0
-    for tok in tokens:
-        if tok in (PAD_TOKEN, BOS_TOKEN, EOS_TOKEN, MASK_TOKEN):
-            if tok == EOS_TOKEN:
-                break
-            continue
-        if NOTE_OFFSET <= tok < NOTE_OFFSET + N_PITCHES:
-            pitch = tok - NOTE_OFFSET
-            if step < seq_len:
-                roll[step, pitch] = 1.0
-                step += 1
-    return roll
+        # Create mapping dictionaries
+        self.token_to_id = {token: i for i, token in enumerate(self.vocab)}
+        self.id_to_token = {i: token for i, token in enumerate(self.vocab)}
 
+    @property
+    def vocab_size(self):
+        """Returns the total number of tokens in the vocabulary."""
+        return len(self.vocab)
 
-class EventTokenDataset(torch.utils.data.Dataset):
-    """Dataset for Transformer: returns padded token sequences."""
+    @property
+    def pad_id(self):
+        return self.token_to_id[self.pad_token]
 
-    def __init__(self, X: np.ndarray, max_len: int = 256):
-        self.max_len = max_len
-        self.sequences = []
-        for i in range(len(X)):
-            toks = pianoroll_to_tokens(X[i])[:max_len]
-            # pad to max_len
-            toks += [PAD_TOKEN] * (max_len - len(toks))
-            self.sequences.append(toks)
+    def encode(self, token_sequence):
+        """
+        Converts a list of string tokens into a list of integer IDs.
+        Adds <SOS> at the beginning and <EOS> at the end.
+        """
+        encoded = [self.token_to_id[self.sos_token]]
+        for token in token_sequence:
+            encoded.append(self.token_to_id.get(token, self.token_to_id[self.unk_token]))
+        encoded.append(self.token_to_id[self.eos_token])
+        return encoded
 
-    def __len__(self):
-        return len(self.sequences)
+    def decode(self, id_sequence, remove_special_tokens=True):
+        """
+        Converts a list of integer IDs back into a list of string tokens.
+        """
+        decoded = []
+        for idx in id_sequence:
+            # Handle potential tensor inputs
+            if hasattr(idx, 'item'):
+                idx = idx.item()
+                
+            token = self.id_to_token.get(idx, self.unk_token)
+            
+            if remove_special_tokens and token in [self.pad_token, self.sos_token, self.eos_token]:
+                continue
+                
+            decoded.append(token)
+        return decoded
 
-    def __getitem__(self, idx):
-        seq = torch.tensor(self.sequences[idx], dtype=torch.long)
-        x   = seq[:-1]
-        y   = seq[1:]
-        return x, y
+    def save(self, filepath):
+        """Saves the vocabulary mapping to disk."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'wb') as f:
+            pickle.dump(self.token_to_id, f)
+        print(f"Tokenizer vocabulary saved to {filepath}")
 
+    def load(self, filepath):
+        """Loads a vocabulary mapping from disk."""
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Vocabulary file not found at {filepath}")
+            
+        with open(filepath, 'rb') as f:
+            self.token_to_id = pickle.load(f)
+            self.id_to_token = {i: t for t, i in self.token_to_id.items()}
+            self.vocab = list(self.token_to_id.keys())
+        print("Tokenizer vocabulary loaded successfully.")
 
-def get_transformer_dataloaders(splits: dict, max_len: int = 256,
-                                batch_size: int = 64, num_workers: int = 2):
-    from torch.utils.data import DataLoader
-    train_ds = EventTokenDataset(splits["X_train"], max_len)
-    val_ds   = EventTokenDataset(splits["X_val"],   max_len)
-    test_ds  = EventTokenDataset(splits["X_test"],  max_len)
-
-    kwargs = dict(batch_size=batch_size, num_workers=num_workers,
-                  pin_memory=True, drop_last=True)
-    return (DataLoader(train_ds, shuffle=True,  **kwargs),
-            DataLoader(val_ds,   shuffle=False, **kwargs),
-            DataLoader(test_ds,  shuffle=False, **kwargs))
-
-
+# --- Helper function to test the tokenizer if run directly ---
 if __name__ == "__main__":
-    # Smoke test
-    dummy = np.random.randint(0, 2, (64, N_PITCHES)).astype(np.float32)
-    toks  = pianoroll_to_tokens(dummy)
-    back  = tokens_to_pianoroll(toks)
-    print("tokens:", len(toks), "| roll shape:", back.shape)
-    print("Vocab size check:", TR_VOCAB_SIZE)
+    tokenizer = MusicTokenizer()
+    print(f"Initialized Tokenizer with Vocab Size: {tokenizer.vocab_size}")
+    
+    # Mock data to simulate extracting events from a MIDI file
+    sample_events = ["NOTE_ON_60", "VELOCITY_16", "TIME_SHIFT_10", "NOTE_OFF_60"]
+    
+    encoded_ids = tokenizer.encode(sample_events)
+    print(f"\nOriginal Events: {sample_events}")
+    print(f"Encoded IDs: {encoded_ids}")
+    print(f"Decoded Events: {tokenizer.decode(encoded_ids)}")

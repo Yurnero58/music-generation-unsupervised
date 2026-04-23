@@ -1,69 +1,93 @@
 import os
 import sys
 import torch
-import numpy as np
+import torch.nn.functional as F
+import pretty_midi
 
-# Ensure PYTHONPATH is correct for imports
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from src.models.transformer import MusicTransformer
+from src.preprocessing.tokenizer import MusicTokenizer
 
-from models.transformer import MusicTransformer
-from generation.generate_music import matrix_to_midi
+def generate_tokens(model, start_token_id, max_length=1024, temperature=0.9, device="cuda"):
+    model.eval()
+    sequence = torch.tensor([[start_token_id]], dtype=torch.long).to(device)
+    
+    with torch.no_grad():
+        for _ in range(max_length):
+            logits = model(sequence)
+            next_token_logits = logits[:, -1, :] / temperature
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            sequence = torch.cat([sequence, next_token], dim=1)
+                
+    return sequence[0].tolist()
 
-def generate_task3_long_sequences(num_samples=10, seq_len=1024):
+def tokens_to_midi(string_tokens, output_path):
+    """Converts a list of string events back into a playable MIDI file."""
+    midi = pretty_midi.PrettyMIDI()
+    piano_program = pretty_midi.instrument_name_to_program('Acoustic Grand Piano')
+    piano = pretty_midi.Instrument(program=piano_program)
+    
+    current_time = 0.0
+    current_velocity = 64 # Default velocity
+    active_notes = {}
+    
+    for token in string_tokens:
+        if token.startswith("TIME_SHIFT_"):
+            shift_bins = int(token.split("_")[2])
+            current_time += shift_bins / 100.0 # Revert 10ms bins back to seconds
+        
+        elif token.startswith("VELOCITY_"):
+            bin_val = int(token.split("_")[1])
+            current_velocity = int((bin_val / 32.0) * 128) # Revert bins back to 0-127
+            
+        elif token.startswith("NOTE_ON_"):
+            pitch = int(token.split("_")[2])
+            # Store when the note started and how loud it was
+            active_notes[pitch] = (current_time, current_velocity)
+            
+        elif token.startswith("NOTE_OFF_"):
+            pitch = int(token.split("_")[2])
+            if pitch in active_notes:
+                start_time, vel = active_notes.pop(pitch)
+                # Create the note and add it to the instrument
+                note = pretty_midi.Note(velocity=vel, pitch=pitch, start=start_time, end=current_time)
+                piano.notes.append(note)
+                
+    midi.instruments.append(piano)
+    midi.write(output_path)
+
+def generate_10_compositions():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Initialize model with Task 3 dimensions
-    model = MusicTransformer(input_dim=88, d_model=256, nhead=8).to(device)
+    # Load Tokenizer
+    tokenizer = MusicTokenizer()
+    vocab_path = '/content/music-generation-unsupervised/data/processed/tokenizer_vocab.pkl'
+    tokenizer.load(vocab_path)
     
+    # Load Model
+    model = MusicTransformer(vocab_size=tokenizer.vocab_size, d_model=256, nhead=8, num_layers=4).to(device)
     weights_path = '/content/music-generation-unsupervised/src/models/transformer_weights.pt'
-    if not os.path.exists(weights_path):
-        print(f"Error: Transformer weights not found at {weights_path}. Train the model first!")
-        return
-
     model.load_state_dict(torch.load(weights_path, map_location=device))
-    model.eval()
-
-    output_dir = '/content/music-generation-unsupervised/outputs/task3'
+    
+    output_dir = '/content/music-generation-unsupervised/outputs/transformer/'
     os.makedirs(output_dir, exist_ok=True)
-
-    print(f"Generating {num_samples} long-horizon compositions (Length: {seq_len} steps)...")
-
-    with torch.no_grad():
-        for i in range(num_samples):
-            # Start with a silent frame as a seed
-            generated_seq = [torch.zeros(1, 1, 88).to(device)]
-            
-            for t in range(seq_len):
-                # Concatenate previous tokens for context
-                input_tensor = torch.cat(generated_seq, dim=1)
-                
-                # Causal mask ensures we only look at the past
-                mask = model.generate_mask(input_tensor.size(1)).to(device)
-                
-                # Predict next token distribution p(xt | x<t)
-                full_output = model(input_tensor, mask)
-                probs = full_output[:, -1:, :] # Get only the last prediction
-                
-                # Use Temperature Sampling to prevent repetitive 'loops'
-                # Temperature < 1.0 makes it conservative; > 1.0 makes it more random
-                temp = 0.9
-                probs = torch.pow(probs, 1.0 / temp)
-                
-                # Stochastic sampling to ensure variety
-                sample = torch.bernoulli(probs)
-                generated_seq.append(sample)
-                
-                # Sliding context window (Transformer memory limit)
-                if len(generated_seq) > 512:
-                    generated_seq.pop(0)
-
-            # Convert the list of tensors into a single matrix
-            matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
-            
-            midi_path = os.path.join(output_dir, f"transformer_long_{i+1}.mid")
-            # Apply a confidence threshold for the final MIDI file
-            matrix_to_midi(matrix > 0.5, midi_path)
-            print(f"Generated and saved: {midi_path}")
+    
+    sos_token_id = tokenizer.token_to_id[tokenizer.sos_token]
+    
+    print("Generating 10 long-sequence compositions...")
+    for i in range(10):
+        # 1. Autoregressive Generation
+        comp_ids = generate_tokens(model, sos_token_id, max_length=1500, temperature=0.95, device=device)
+        
+        # 2. Decode IDs to String Events
+        string_events = tokenizer.decode(comp_ids)
+        
+        # 3. Convert Strings to MIDI
+        out_file = os.path.join(output_dir, f'composition_{i+1}.mid')
+        tokens_to_midi(string_events, out_file)
+        
+        print(f"Composition {i+1} saved to {out_file} (Length: {len(comp_ids)} tokens)")
 
 if __name__ == "__main__":
-    generate_task3_long_sequences()
+    generate_10_compositions()
