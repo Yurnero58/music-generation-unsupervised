@@ -20,7 +20,8 @@ def train():
     model = MusicVAE(input_dim=88, hidden_dim=512, latent_dim=256).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
-    data_path = '/content/music-generation-unsupervised/data/processed/multi_genre_lmd.npy'
+    # UPDATED PATH: Pointing to the new train split
+    data_path = '/content/music-generation-unsupervised/data/train_test_split/multi_genre_lmd_train.npy'
     train_loader = get_loader(data_path, batch_size=64)
     
     print(f"Final Attempt: Force-Reconstruction Training on {device}...")
@@ -41,6 +42,7 @@ def train():
         
         print(f"Epoch {epoch+1}/30 | Loss: {total_loss/len(train_loader):.4f} | Beta: {beta}")
 
+    os.makedirs('/content/music-generation-unsupervised/src/models/', exist_ok=True)
     torch.save(model.state_dict(), '/content/music-generation-unsupervised/src/models/vae_weights.pt')
     print("Training Complete.")
 

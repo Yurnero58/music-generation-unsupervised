@@ -13,7 +13,7 @@ def generate_task2_samples(num_samples=8):
     model.load_state_dict(torch.load('/content/music-generation-unsupervised/src/models/vae_weights.pt', map_location=device))
     model.eval()
 
-    output_dir = '/content/music-generation-unsupervised/outputs/task2'
+    output_dir = '/content/music-generation-unsupervised/outputs/generated_midis'
     os.makedirs(output_dir, exist_ok=True)
 
     with torch.no_grad():
@@ -33,7 +33,7 @@ def generate_task2_samples(num_samples=8):
                 decoder_input = sample
             
             matrix = torch.cat(generated_seq, dim=1).squeeze(0).cpu().numpy()
-            matrix_to_midi(matrix > 0.5, os.path.join(output_dir, f"diverse_sample_{i+1}.mid"))
+            matrix_to_midi(matrix > 0.5, os.path.join(output_dir, f"Task-2 midi file {i+1}.mid"))
 
 if __name__ == "__main__":
     generate_task2_samples()

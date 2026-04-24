@@ -19,7 +19,8 @@ def train():
     # Swapped to BCE to handle sparse binary data properly
     criterion = nn.BCELoss() 
     
-    npy_path = 'data/processed/classical_piano.npy'
+    # UPDATED PATH: Pointing to the new train split
+    npy_path = 'data/train_test_split/classical_piano_train.npy'
     train_loader = get_loader(npy_path, batch_size=128, shuffle=True)
     
     epochs = 25

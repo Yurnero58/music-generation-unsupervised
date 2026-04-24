@@ -1,55 +1,60 @@
-import pretty_midi
-import numpy as np
-import glob
 import os
+import sys
+import glob
+import numpy as np
 
-def calculate_metrics(midi_folder):
-    # Ensure the path is absolute for Windows
-    abs_path = os.path.abspath(midi_folder)
-    files = glob.glob(os.path.join(abs_path, "*.mid"))
+# Ensure Python can find the adjacent modules
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from pitch_histogram import get_pitch_histogram, calculate_histogram_similarity
+from rhythm_score import calculate_rhythm_diversity, calculate_repetition_ratio
+
+def evaluate_folder(generated_dir, target_histogram=None):
+    """
+    Runs quantitative metrics on a directory of MIDI files.
+    """
+    midi_files = glob.glob(os.path.join(generated_dir, "*.mid"))
+    if not midi_files:
+        print(f"No MIDI files found in {generated_dir}")
+        return
+
+    print(f"Evaluating {len(midi_files)} files in {os.path.basename(generated_dir)}...\n")
+
+    similarities = []
+    diversities = []
+    repetitions = []
+
+    for file in midi_files:
+        # 1. Pitch Histogram
+        gen_hist = get_pitch_histogram(file)
+        if target_histogram is not None:
+            sim = calculate_histogram_similarity(gen_hist, target_histogram)
+            similarities.append(sim)
+
+        # 2. Rhythm Diversity
+        div = calculate_rhythm_diversity(file)
+        diversities.append(div)
+
+        # 3. Repetition Ratio
+        rep = calculate_repetition_ratio(file)
+        repetitions.append(rep)
+
+    print("-" * 40)
+    print("QUANTITATIVE EVALUATION RESULTS")
+    print("-" * 40)
     
-    if not files:
-        print(f"Warning: No MIDI files found in {abs_path}")
-        return None, None
-
-    pitch_varieties = []
-    note_densities = []
-
-    for f in files:
-        try:
-            pm = pretty_midi.PrettyMIDI(f)
-            # Pitch Variety: Number of unique MIDI notes
-            pitches = [note.pitch for inst in pm.instruments for note in inst.notes]
-            if pitches:
-                pitch_varieties.append(len(set(pitches)))
-                
-                # Note Density: Notes per second
-                duration = pm.get_end_time()
-                if duration > 0:
-                    note_densities.append(len(pitches) / duration)
-        except Exception as e:
-            continue
-            
-    if not pitch_varieties:
-        return None, None
-        
-    return np.mean(pitch_varieties), np.mean(note_densities)
+    if target_histogram is not None:
+        print(f"Avg Pitch Histogram Distance (H): {np.mean(similarities):.4f}")
+    
+    print(f"Avg Rhythm Diversity Score:       {np.mean(diversities):.4f}")
+    print(f"Avg Repetition Ratio:             {np.mean(repetitions):.4f}")
+    print("-" * 40)
 
 if __name__ == "__main__":
-    # Update these to the exact folders on your I: drive
-    t1_path = "outputs/generated_midis"
-    t2_path = "outputs/task2"
-
-    t1_pitch, t1_dense = calculate_metrics(t1_path)
-    t2_pitch, t2_dense = calculate_metrics(t2_path)
-
-    print("\n--- Evaluation Results ---")
-    if t1_pitch is not None:
-        print(f"Task 1 (Classical)   | Pitch Variety: {t1_pitch:.2f} | Note Density: {t1_dense:.2f}")
-    else:
-        print("Task 1: No data found.")
-
-    if t2_pitch is not None:
-        print(f"Task 2 (Multi-Genre) | Pitch Variety: {t2_pitch:.2f} | Note Density: {t2_dense:.2f}")
-    else:
-        print("Task 2: No data found.")
+    # Point this to whichever folder you want to test (Task 1, 2, 3, or 4)
+    target_dir = '/content/music-generation-unsupervised/outputs/generated_midis'
+    
+    # Optional: If you want to calculate H(p,q), define a 'perfect' target distribution.
+    # E.g., A uniform distribution across all 12 notes:
+    dummy_target_hist = np.ones(12) / 12.0 
+    
+    evaluate_folder(target_dir, target_histogram=dummy_target_hist)

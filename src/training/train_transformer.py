@@ -40,7 +40,8 @@ def train_transformer():
     tokenizer.load(vocab_path)
     vocab_size = tokenizer.vocab_size
 
-    data_path = '/content/music-generation-unsupervised/data/processed/transformer_tokens.npy'
+    # UPDATED PATH: Pointing to the new train split
+    data_path = '/content/music-generation-unsupervised/data/train_test_split/transformer_tokens_train.npy'
     print(f"Loading dataset from {data_path}...")
     token_data = np.load(data_path).astype(np.int64)
     

@@ -28,7 +28,7 @@ def rl_finetune():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting RLHF on {device}...")
 
-    # 1. Load Tokenizer
+    # 1. Load Tokenizer (Stays in processed, does not get split)
     tokenizer = MusicTokenizer()
     tokenizer.load('/content/music-generation-unsupervised/data/processed/tokenizer_vocab.pkl')
     vocab_size = tokenizer.vocab_size
@@ -54,7 +54,6 @@ def rl_finetune():
     pbar = tqdm(range(K_iterations), desc="RL Fine-tuning")
     for iteration in pbar:
         # Algorithm Step 3: Generate music samples X_gen ~ p_theta(X)
-        # Note: This function temporarily puts the generator in .eval() mode
         seq = generate_sequence_for_rl(generator, sos_id, max_length=256, device=device)
         
         # Algorithm Step 4: Collect feedback score r(X_gen)
@@ -65,7 +64,6 @@ def rl_finetune():
         baseline_reward = 0.9 * baseline_reward + 0.1 * reward
         advantage = reward - baseline_reward # Center the reward to reduce variance
 
-        # --- BUG FIX: CRITICAL STATE SWITCH ---
         # Switch generator back to training mode so Dropout is active for the backward pass!
         generator.train() 
         

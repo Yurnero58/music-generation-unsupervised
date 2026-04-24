@@ -1,82 +1,59 @@
-# =============================================================================
-# src/evaluation/rhythm_score.py
-# Rhythm analysis — diversity, syncopation, density plots
-# =============================================================================
-
-import os, sys
-from pathlib import Path
+import pretty_midi
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-from config import OUTPUT_PLOTS, N_PITCHES, STEPS_PER_BAR
-from evaluation.metrics import rhythm_diversity, repetition_ratio
-
-
-def note_density_profile(roll: np.ndarray) -> np.ndarray:
-    """Notes-per-step profile: (T,) float."""
-    return roll.sum(axis=1)
-
-
-def syncopation_score(roll: np.ndarray,
-                      steps_per_bar: int = STEPS_PER_BAR) -> float:
+def calculate_rhythm_diversity(midi_path, decimals=2):
     """
-    Proxy syncopation: fraction of note onsets on off-beats.
-    Beat positions: 0, 4, 8, 12 (for 16 steps/bar).
+    Calculates D_rhythm = (#unique_durations) / (#total_notes)
+    Durations are rounded to avoid microscopic floating-point noise.
     """
-    T, n_p = roll.shape
-    beat_mask = np.zeros(T, dtype=bool)
-    beat_steps = [0, 4, 8, 12]   # quarter-note positions in 16-step bar
-    for t in range(T):
-        if (t % steps_per_bar) in beat_steps:
-            beat_mask[t] = True
+    try:
+        midi = pretty_midi.PrettyMIDI(midi_path)
+    except Exception:
+        return 0.0
 
-    total_onsets = 0
-    off_beat_onsets = 0
-    for t in range(1, T):
-        onsets = (roll[t] > 0) & (roll[t-1] == 0)   # new note starts
-        n_on = onsets.sum()
-        total_onsets += n_on
-        if not beat_mask[t]:
-            off_beat_onsets += n_on
-    return float(off_beat_onsets / max(1, total_onsets))
+    durations = []
+    
+    for instrument in midi.instruments:
+        if not instrument.is_drum:
+            for note in instrument.notes:
+                duration = round(note.end - note.start, decimals)
+                durations.append(duration)
+                
+    total_notes = len(durations)
+    if total_notes == 0:
+        return 0.0
+        
+    unique_durations = len(set(durations))
+    
+    return unique_durations / total_notes
 
-
-def plot_rhythm_comparison(model_rolls: dict, save_path: str = None):
+def calculate_repetition_ratio(midi_path, n_gram_length=4):
     """
-    model_rolls: {model_name: list_of_rolls}
-    Bar chart comparing rhythm diversity + syncopation across models.
+    Calculates R = (#repeated_patterns) / (#total_patterns)
+    Uses sequences of 'n' consecutive pitches as a pattern.
     """
-    labels, r_divs, syncs, rep_rats = [], [], [], []
-    for name, rolls in model_rolls.items():
-        labels.append(name)
-        rd_vals, sy_vals, rr_vals = [], [], []
-        for roll in rolls:
-            if roll.shape[0] == 0:
-                continue
-            rd_vals.append(rhythm_diversity(roll))
-            sy_vals.append(syncopation_score(roll))
-            rr_vals.append(repetition_ratio(roll))
-        r_divs.append(np.mean(rd_vals) if rd_vals else 0)
-        syncs.append(np.mean(sy_vals)  if sy_vals  else 0)
-        rep_rats.append(np.mean(rr_vals) if rr_vals else 0)
+    try:
+        midi = pretty_midi.PrettyMIDI(midi_path)
+    except Exception:
+        return 0.0
 
-    x = np.arange(len(labels))
-    w = 0.25
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(x - w, r_divs,   width=w, label="Rhythm Diversity")
-    ax.bar(x,     syncs,    width=w, label="Syncopation Score")
-    ax.bar(x + w, rep_rats, width=w, label="Repetition Ratio (lower=better)")
-    ax.set_xticks(x); ax.set_xticklabels(labels, rotation=20, ha="right")
-    ax.set_ylabel("Score")
-    ax.set_title("Rhythm Metrics Comparison Across Models")
-    ax.legend()
-    plt.tight_layout()
-
-    out = save_path or os.path.join(OUTPUT_PLOTS, "rhythm_comparison.png")
-    plt.savefig(out, dpi=150)
-    plt.close()
-    print(f"[rhythm_score] Saved → {out}")
+    pitches = []
+    for instrument in midi.instruments:
+        if not instrument.is_drum:
+            for note in instrument.notes:
+                pitches.append(note.pitch)
+                
+    if len(pitches) < n_gram_length:
+        return 0.0
+        
+    # Extract overlapping n-grams
+    patterns = [tuple(pitches[i:i+n_gram_length]) for i in range(len(pitches) - n_gram_length + 1)]
+    total_patterns = len(patterns)
+    
+    if total_patterns == 0:
+        return 0.0
+        
+    unique_patterns = set(patterns)
+    repeated_patterns = total_patterns - len(unique_patterns)
+    
+    return repeated_patterns / total_patterns

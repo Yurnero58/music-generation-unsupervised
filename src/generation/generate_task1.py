@@ -49,7 +49,7 @@ def generate():
                 generated_matrix[t, :] = binary_step
                 decoder_input = seed[:, t:t+1, :]
             
-            out_file = os.path.join(output_dir, f'task1_reconstruction_{i+1}.mid')
+            out_file = os.path.join(output_dir, f'Task-1 midi file {i+1}.mid')
             matrix_to_midi(generated_matrix, out_file)
             print(f"Generated: {out_file}")
 
